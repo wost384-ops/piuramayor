@@ -5,10 +5,10 @@ include 'includes/header.php';
 
 $rol = $_SESSION['user']['rol'] ?? 'vendedor';
 
-// Definir límite de stock bajo
-$limite_stock = 10;
+// Definir límite de stock bajo: CAMBIADO DE 10 A 50 UNIDADES
+$limite_stock = 50;
 
-// Obtener productos con stock bajo
+// Obtener productos con stock bajo (Stock <= 50)
 $productosBajoStock = $pdo->prepare("SELECT nombre, stock FROM productos WHERE stock <= ? ORDER BY stock ASC");
 $productosBajoStock->execute([$limite_stock]);
 $productos = $productosBajoStock->fetchAll(PDO::FETCH_ASSOC);
@@ -16,6 +16,7 @@ $productos = $productosBajoStock->fetchAll(PDO::FETCH_ASSOC);
 
 <div class="container mt-4">
     <h3 class="mb-4 text-center">⚠️ Alerta de Stock Bajo</h3>
+    <p class="text-muted text-center">Mostrando productos con stock igual o menor a <?= $limite_stock ?> unidades.</p>
 
     <?php if (count($productos) > 0): ?>
         <table class="table table-striped shadow-sm">
@@ -35,7 +36,7 @@ $productos = $productosBajoStock->fetchAll(PDO::FETCH_ASSOC);
             </tbody>
         </table>
     <?php else: ?>
-        <div class="alert alert-success text-center">✅ Todos los productos tienen stock suficiente.</div>
+        <div class="alert alert-success text-center">✅ Todos los productos tienen stock superior a <?= $limite_stock ?> unidades.</div>
     <?php endif; ?>
 </div>
 

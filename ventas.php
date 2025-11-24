@@ -15,6 +15,7 @@ $can_manage = ($rol === 'admin' || $rol === 'programador'); // Variable para sim
 // --- AGREGAR VENTA (Acceso para todos) ---
 if (isset($_POST['agregar'])) {
     $cliente_nombre = trim($_POST['cliente_nombre']);
+    $cliente_telefono = trim($_POST['cliente_telefono']); // <-- NUEVO: Capturamos el teléfono
     $productos = $_POST['productos'] ?? [];
     $cantidades = $_POST['cantidades'] ?? [];
 
@@ -34,6 +35,7 @@ if (isset($_POST['agregar'])) {
             $producto_info = $stmt_stock->fetch(PDO::FETCH_ASSOC);
 
             if ($producto_info) {
+                // VERIFICACIÓN CRÍTICA EN PHP
                 if ($cantidad_solicitada > $producto_info['stock']) {
                     $error_stock = "Stock insuficiente para: " . htmlspecialchars($producto_info['nombre']) . ". Solicitado: {$cantidad_solicitada}, Disponible: {$producto_info['stock']}.";
                     $pudo_vender = false;
@@ -51,11 +53,13 @@ if (isset($_POST['agregar'])) {
             $cliente = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if (!$cliente) {
-                $stmt = $pdo->prepare("INSERT INTO clientes (nombre) VALUES (?)");
-                $stmt->execute([$cliente_nombre]);
+                // CORRECCIÓN: Insertamos el nuevo cliente con el teléfono capturado
+                $stmt = $pdo->prepare("INSERT INTO clientes (nombre, telefono) VALUES (?, ?)");
+                $stmt->execute([$cliente_nombre, $cliente_telefono]); 
                 $cliente_id = $pdo->lastInsertId();
             } else {
                 $cliente_id = $cliente['id'];
+                // Opcional: Podrías actualizar el teléfono si el campo no está vacío
             }
 
             // Calcular total y registrar venta (TRANSACTION recomendado para estos casos)
@@ -70,10 +74,9 @@ if (isset($_POST['agregar'])) {
                     $total += $precio * $cantidades[$index];
                 }
 
-                // Contar ventas del día
-                $fecha = date('Y-m-d');
-                $stmt = $pdo->prepare("SELECT COUNT(*) AS ventas_hoy FROM ventas WHERE DATE(fecha) = ?");
-                $stmt->execute([$fecha]);
+                // Contar ventas del día (usando CURDATE() para sincronizar)
+                $stmt = $pdo->prepare("SELECT COUNT(*) AS ventas_hoy FROM ventas WHERE DATE(fecha) = CURDATE()");
+                $stmt->execute();
                 $ventasHoy = $stmt->fetch(PDO::FETCH_ASSOC)['ventas_hoy'] ?? 0;
                 $numeroDia = $ventasHoy + 1;
 
@@ -138,13 +141,16 @@ $ventas = $pdo->query("
         <div class="alert <?= strpos($mensaje, '✅') !== false ? 'alert-success' : 'alert-danger' ?>"><?= $mensaje ?></div>
     <?php endif; ?>
 
-    <div class="card mb-4 p-3">
+    <div class="card mb-4 p-3 shadow-sm">
         <h5>➕ Agregar nueva venta</h5>
         <form method="POST" id="ventaForm">
             <div class="row mb-3">
                 <div class="col-md-6">
                     <input type="text" name="cliente_nombre" id="cliente_nombre" class="form-control" placeholder="Escriba nombre del cliente" autocomplete="off" required>
                     <div id="cliente_list" class="list-group"></div>
+                </div>
+                <div class="col-md-6">
+                    <input type="text" name="cliente_telefono" id="cliente_telefono" class="form-control" placeholder="Teléfono (9 dígitos, opcional)" maxlength="9">
                 </div>
             </div>
 
@@ -180,7 +186,7 @@ $ventas = $pdo->query("
         </form>
     </div>
 
-    <div class="card p-3">
+    <div class="card p-3 shadow-sm">
         <h5>💰 Lista de ventas</h5>
         <div class="table-responsive">
             <table class="table table-striped mt-3">
@@ -223,41 +229,50 @@ $ventas = $pdo->query("
 <script>
 let productosSeleccionados = {};
 
-// Buscar productos
+// Buscar productos (Se corrigió para incluir data-stock en el link)
 $('#buscar_producto').on('keyup', function() {
     let q = $(this).val();
     if(q.length < 1) { $('#productos_list').html(''); return; }
 
-    // AJAX Call: NOT restricted by role
     $.getJSON('buscar_productos.php', {q: q}, function(data){
         let html = '';
         data.forEach(p => {
-            html += `<a href="#" class="list-group-item list-group-item-action agregarProducto" data-id="${p.id}" data-nombre="${p.nombre}" data-precio="${p.precio}">${p.nombre} - S/ ${p.precio} (Stock: ${p.stock})</a>`;
+            // Se añade data-stock al elemento <a>
+            html += `<a href="#" class="list-group-item list-group-item-action agregarProducto" 
+                     data-id="${p.id}" data-nombre="${p.nombre}" data-precio="${p.precio}" data-stock="${p.stock}">
+                     ${p.nombre} - S/ ${p.precio} (Stock: ${p.stock})
+                     </a>`;
         });
         $('#productos_list').html(html);
     });
 });
 
-// ... (El resto del script JS se mantiene igual)
-
-// Agregar producto a tabla
+// Agregar producto a tabla 
 $(document).on('click', '.agregarProducto', function(e){
     e.preventDefault();
     let id = $(this).data('id');
     let nombre = $(this).data('nombre');
     let precio = parseFloat($(this).data('precio'));
+    let stock = parseInt($(this).data('stock')); 
+
     if(productosSeleccionados[id]) return; 
+
+    if (stock < 1) {
+        alert("No se puede agregar el producto: Stock agotado.");
+        return;
+    }
 
     productosSeleccionados[id] = 1;
 
     $('#productos_list').html('');
     $('#buscar_producto').val('');
 
+    // Se añade data-stock a la fila <tr> y max="" al input
     $('#tablaProductos tbody').append(`
-        <tr data-id="${id}">
+        <tr data-id="${id}" data-stock="${stock}">
             <td>${nombre}<input type="hidden" name="productos[]" value="${id}"></td>
             <td>${precio.toFixed(2)}</td>
-            <td><input type="number" name="cantidades[]" value="1" min="1" class="form-control cantidad"></td>
+            <td><input type="number" name="cantidades[]" value="1" min="1" max="${stock}" class="form-control cantidad"></td>
             <td class="subtotal">${precio.toFixed(2)}</td>
             <td><button type="button" class="btn btn-sm btn-danger quitar">X</button></td>
         </tr>
@@ -265,26 +280,25 @@ $(document).on('click', '.agregarProducto', function(e){
     actualizarTotal();
 });
 
-// Quitar producto
-$(document).on('click', '.quitar', function(){
-    let row = $(this).closest('tr');
-    let id = row.data('id');
-    delete productosSeleccionados[id];
-    row.remove();
-    actualizarTotal();
-});
-
-// Cambiar cantidad
+// Cambiar cantidad (función que maneja el input y valida el stock)
 $(document).on('input', '.cantidad', function(){
     let row = $(this).closest('tr');
     let precio = parseFloat(row.find('td:eq(1)').text());
-    let cantidad = parseInt($(this).val()) || 0;
+    let stockMax = parseInt(row.data('stock')); 
+
+    let cantidad = parseInt($(this).val()); 
     
-    if (cantidad < 1) {
-        $(this).val(1);
-        cantidad = 1;
+    if (isNaN(cantidad) || cantidad < 1) {
+        $(this).val(1); 
+        cantidad = 1; 
     }
     
+    if (cantidad > stockMax) {
+        alert(`Stock insuficiente. Solo hay ${stockMax} unidades disponibles.`);
+        $(this).val(stockMax);
+        cantidad = stockMax;
+    }
+
     row.find('.subtotal').text((precio * cantidad).toFixed(2));
     actualizarTotal();
 });
@@ -305,7 +319,9 @@ $('#cliente_nombre').on('keyup', function(){
     $.getJSON('buscar_clientes.php', {q: q}, function(data){
         let html = '';
         data.forEach(c => {
-            html += `<a href="#" class="list-group-item list-group-item-action seleccionarCliente" data-nombre="${c.nombre}">${c.nombre}</a>`;
+            // CONSIDERACIÓN: Al seleccionar un cliente existente, se debería prellenar el teléfono.
+            // Para simplificar, solo mostramos el nombre
+            html += `<a href="#" class="list-group-item list-group-item-action seleccionarCliente" data-nombre="${c.nombre}" data-telefono="${c.telefono}">${c.nombre}</a>`;
         });
         $('#cliente_list').html(html);
     });
@@ -314,8 +330,17 @@ $('#cliente_nombre').on('keyup', function(){
 $(document).on('click', '.seleccionarCliente', function(e){
     e.preventDefault();
     let nombre = $(this).data('nombre');
+    let telefono = $(this).data('telefono'); // Capturamos el teléfono
+    
     $('#cliente_nombre').val(nombre);
     $('#cliente_list').html('');
+    
+    // Si el cliente ya existe, rellenamos el campo de teléfono
+    if (telefono) {
+        $('#cliente_telefono').val(telefono);
+    } else {
+        $('#cliente_telefono').val(''); // Si es nulo, lo limpiamos
+    }
 });
 </script>
 

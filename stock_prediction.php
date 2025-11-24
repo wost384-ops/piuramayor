@@ -3,63 +3,66 @@
 require 'includes/db.php';
 
 $results = [];
-$dias_a_monitorear = 7; // Monitoreamos los últimos 7 días para una "venta constante"
+// Nivel: Si 3 o más clientes lo compraron hoy, se considera un "surge".
+$SURGE_TRANSACTIONS_THRESHOLD = 3; 
+// Nivel: Solo alerta si el stock restante es menor a 100 unidades.
+$MAX_STOCK_FOR_ALERT = 100;        
 
 try {
-    // 1. Obtener la fecha de inicio del monitoreo
-    $fecha_inicio = date('Y-m-d', strtotime("-$dias_a_monitorear days"));
-
-    // 2. Obtener datos históricos de ventas por producto (Últimos 7 días)
+    // 1. Obtener datos de ventas y stock para el día de hoy
     $stmt = $pdo->prepare("
         SELECT
             p.id AS producto_id,
             p.nombre,
             p.stock,
-            -- Promedio diario basado en 7 días para ser más 'constante'
-            IFNULL(SUM(vd.cantidad) / 7, 0) AS promedio_diario,
-            -- Días en los que se vendió en los últimos 7 días
-            COUNT(DISTINCT DATE(v.fecha)) AS dias_vendidos_7
+            /* Suma de unidades vendidas HOY */
+            SUM(CASE WHEN DATE(v.fecha) = CURDATE() THEN vd.cantidad ELSE 0 END) AS unidades_vendidas_hoy,
+            /* Conteo de transacciones (clientes) que incluyeron el producto HOY */
+            COUNT(DISTINCT v.id) AS transacciones_hoy
         FROM productos p
         LEFT JOIN ventas_detalle vd ON p.id = vd.producto_id
-        LEFT JOIN ventas v ON vd.venta_id = v.id AND v.fecha >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-        GROUP BY p.id
-        HAVING p.stock > 0 -- Solo productos con stock actual > 0
+        LEFT JOIN ventas v ON vd.venta_id = v.id AND DATE(v.fecha) = CURDATE()
+        GROUP BY p.id, p.nombre, p.stock
+        HAVING p.stock > 0
     ");
     $stmt->execute();
     $productos = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     foreach ($productos as $producto) {
         $stock_actual = (int)$producto['stock'];
-        $promedio_diario = (float)$producto['promedio_diario'];
-        $dias_vendidos_7 = (int)$producto['dias_vendidos_7'];
+        $unidades_vendidas_hoy = (float)$producto['unidades_vendidas_hoy'];
+        $transacciones_hoy = (int)$producto['transacciones_hoy'];
 
-        // CÁLCULO 1: Cantidad de stock mínima deseada (cubrir 2 días de venta promedio)
-        $stock_critico = $promedio_diario * 2; 
-
-        // CÁLCULO 2: Riesgo de stock bajo (Stock actual < Stock crítico)
-        $riesgo_stock = ($stock_actual < $stock_critico);
+        // CÁLCULO 1: RIESGO DE SURGE (Alta demanda HOY + Stock moderadamente bajo)
+        $is_surge_risk = (
+            $transacciones_hoy >= $SURGE_TRANSACTIONS_THRESHOLD && // 3 o más clientes lo compraron hoy
+            $stock_actual < $MAX_STOCK_FOR_ALERT // Y el stock restante es menor a 100 unidades
+        );
         
-        // CÁLCULO 3: Probabilidad de venta para un día aleatorio (en porcentaje)
-        // Porcentaje de días vendidos en la última semana
-        $probabilidad_venta = ($dias_vendidos_7 / $dias_a_monitorear) * 100;
+        // CÁLCULO 2: Probabilidad de Agotamiento (Porcentaje del stock vendido hoy)
+        // Mide qué tanto se ha agotado el stock con la venta de hoy.
+        $probabilidad_agotamiento = ($stock_actual > 0 && $unidades_vendidas_hoy > 0) 
+            ? round(($unidades_vendidas_hoy / $stock_actual) * 100, 1) 
+            : 0;
 
-        // Solo se muestran productos en RIESGO REAL y con probabilidad de venta significativa (> 5%)
-        if ($riesgo_stock && $probabilidad_venta > 5) {
+        // Si se cumple el riesgo de surge Y se ha vendido algo hoy (Probabilidad > 0)
+        if ($is_surge_risk && $probabilidad_agotamiento > 0) {
             $results[] = [
                 'producto' => htmlspecialchars($producto['nombre']),
                 'stock' => $stock_actual,
-                'riesgo_porcentaje' => round($probabilidad_venta, 1),
-                'promedio_diario' => round($promedio_diario, 2),
-                'stock_critico_num' => round($stock_critico, 0),
-                'mensaje_riesgo' => "Se espera vender $\approx$ " . round($promedio_diario, 1) . " u/día. Sugerencia: Abastecer hasta " . round($stock_critico * 2, 0) . " unidades.",
+                'riesgo_porcentaje' => $probabilidad_agotamiento,
+                'promedio_diario' => $unidades_vendidas_hoy, 
+                'stock_critico_num' => $MAX_STOCK_FOR_ALERT,
+                
+                // MENSAJE CORREGIDO: Usamos "ALERTA DE ALTA DEMANDA HOY"
+                'mensaje_riesgo' => "ALERTA DE ALTA DEMANDA HOY: {$transacciones_hoy} ventas hoy. Se vendió el {$probabilidad_agotamiento}% del stock actual. Abastecer pronto.",
             ];
         }
     }
 
 } catch (\PDOException $e) {
     header('Content-Type: application/json');
-    // Si la tabla productos o ventas no existe aún, devolvemos un error informativo
-    echo json_encode(['error' => 'Error de Base de Datos (SQLSTATE). Asegúrese de haber creado la BD e importado el script SQL.']);
+    echo json_encode(['error' => 'Error de Base de Datos (SQLSTATE).']);
     exit;
 }
 

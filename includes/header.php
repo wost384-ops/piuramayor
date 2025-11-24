@@ -2,30 +2,47 @@
 // Incluir la conexión a DB si no está ya, para usar $pdo en la lógica de alertas
 if (session_status() == PHP_SESSION_NONE) session_start();
 require_once 'includes/db.php'; 
+
+// Asegurar que la sesión exista
+if (!isset($_SESSION['user'])) {
+    if (basename($_SERVER['PHP_SELF']) !== 'login.php' && basename($_SERVER['PHP_SELF']) !== 'index.php') {
+        header('Location: login.php');
+        exit;
+    }
+}
+
 $rol = $_SESSION['user']['rol'] ?? 'vendedor';
 
-// Definimos la variable de gestión estricta (Solo Admin o Programador)
-$is_manager = ($rol === 'admin' || $rol === 'programador');
+// =================================================================
+// 1. DEFINICIÓN DE PERMISOS AJUSTADA
+// =================================================================
+// Nivel 1: Acceso a Inventario Básico (Productos y Alertas/Barra Predictiva)
+$can_manage_basic_inventory = ($rol === 'admin' || $rol === 'programador' || $rol === 'vendedor');
+
+// Nivel 2: Acceso a Finanzas, Proveedores, Cierre de Caja y Reportes (Menús Ocultos al Vendedor)
+$can_manage_finance_menus = ($rol === 'admin' || $rol === 'programador');
+
+// PERMISO AÑADIDO: Para mostrar la tarjeta de Ingresos en el Dashboard
+$can_see_daily_income_card = ($rol === 'admin' || $rol === 'programador' || $rol === 'vendedor');
+
+// =================================================================
 
 // Determinar fondo según sesión
 $backgroundImage = isset($_SESSION['user']) ? 'fondo.jpg' : 'fondo2.jpg';
 
 // Conexión a la base de datos para contar productos con stock bajo y total en stock
 $alertaStock = 0;
-$stockDisponible = 1; // Por defecto hay stock
+$stockDisponible = 1; 
 if(isset($pdo)){
     try {
-        // Productos con stock crítico (≤5) (Solo visible en dashboard/productos para Manager)
-        if($is_manager){
+        if($can_manage_basic_inventory){ 
              $stmt = $pdo->query("SELECT COUNT(*) AS bajo FROM productos WHERE stock <= 5");
              $alertaStock = $stmt->fetch(PDO::FETCH_ASSOC)['bajo'] ?? 0;
         }
 
-        // Verificar si hay productos disponibles en stock (Para el enlace de Ventas)
         $stmt2 = $pdo->query("SELECT COUNT(*) AS total FROM productos WHERE stock > 0");
         $stockDisponible = $stmt2->fetch(PDO::FETCH_ASSOC)['total'] > 0 ? 1 : 0;
     } catch (\PDOException $e) {
-        // Ignorar si las tablas no existen todavía
         $alertaStock = 0;
         $stockDisponible = 1;
     }
@@ -33,7 +50,7 @@ if(isset($pdo)){
 
 // Función para determinar si el link está activo (soporta múltiples nombres de archivo)
 function is_active($filenames) {
-    $current_page = $_SERVER['PHP_SELF'];
+    $current_page = basename($_SERVER['PHP_SELF']);
     if (!is_array($filenames)) {
         $filenames = [$filenames];
     }
@@ -49,13 +66,13 @@ function is_active($filenames) {
 $reportes_pages = ['producto_mas_vendido.php', 'cliente_frecuente.php', 'ventas_vendedor.php'];
 $is_reporte_active = false;
 foreach ($reportes_pages as $page) {
-    if (strpos($_SERVER['PHP_SELF'], $page) !== false) {
+    if (strpos(basename($_SERVER['PHP_SELF']), $page) !== false) {
         $is_reporte_active = true;
         break;
     }
 }
-$collapse_class = $is_reporte_active ? 'show' : '';
-$aria_expanded = $is_reporte_active ? 'true' : 'false';
+$collapse_class = $is_reporte_active && $can_manage_finance_menus ? 'show' : '';
+$aria_expanded = $is_reporte_active && $can_manage_finance_menus ? 'true' : 'false';
 ?>
 <!doctype html>
 <html lang="es">
@@ -150,14 +167,18 @@ $aria_expanded = $is_reporte_active ? 'true' : 'false';
     <i class="bi bi-cart-check-fill" style="color:#007bff;"></i>
     <span style="color:#007bff;">Piura</span><span style="color:#333;">Mayor</span>
   </h3>
-
   <?php if(isset($_SESSION['user'])): ?>
     <p class="small text-muted" style="border-bottom: 1px solid #dee2e6; padding-bottom: 15px;">
       <?php
+      // Lógica de Saludo Dinámico
       $hora = date('H');
-      if ($hora < 12) $saludo = 'Buenos días';
-      elseif ($hora < 18) $saludo = 'Buenas tardes';
-      else $saludo = 'Buenas noches';
+      if ($hora >= 6 && $hora < 12) {
+          $saludo = 'Buenos días';
+      } elseif ($hora >= 12 && $hora < 19) {
+          $saludo = 'Buenas tardes';
+      } else {
+          $saludo = 'Buenas noches';
+      }
       ?>
       <?= $saludo ?>, <strong><?= htmlspecialchars($_SESSION['user']['nombre']) ?></strong>
       <br>
@@ -168,13 +189,13 @@ $aria_expanded = $is_reporte_active ? 'true' : 'false';
       <li class="nav-item">
         <a class="nav-link <?= is_active('dashboard.php') ?>" href="dashboard.php">
             <i class="bi bi-speedometer2 me-2"></i> Dashboard
-          <?php if($alertaStock > 0 && $is_manager): // Alerta de stock crítico visible solo a Manager ?>
+          <?php if($alertaStock > 0 && $can_manage_basic_inventory): ?>
             <span class="badge-stock"><?= $alertaStock ?></span>
           <?php endif; ?>
         </a>
       </li>
 
-      <?php if($is_manager): // INICIO ACCESO MANAGER (Admin/Programador) ?>
+      <?php if($can_manage_basic_inventory): // Productos y Alertas (Vendedor incluido) ?>
         <li class="nav-item">
           <a class="nav-link <?= is_active(['productos.php', 'editar_producto.php']) ?>" href="productos.php">
             <i class="bi bi-box-seam me-2"></i> Productos
@@ -183,12 +204,20 @@ $aria_expanded = $is_reporte_active ? 'true' : 'false';
             <?php endif; ?>
           </a>
         </li>
+      <?php endif; ?>
+
+      <?php if($can_manage_finance_menus): // Proveedores y Cierre de Caja (Vendedor EXCLUIDO) ?>
         <li class="nav-item">
             <a class="nav-link <?= is_active(['proveedores.php', 'editar_proveedores.php']) ?>" href="proveedores.php">
                 <i class="bi bi-truck me-2"></i> Proveedores
             </a>
         </li>
-      <?php endif; // FIN ACCESO MANAGER ?>
+        <li class="nav-item">
+            <a class="nav-link <?= is_active('cierre_caja.php') ?>" href="cierre_caja.php">
+                <i class="bi bi-currency-dollar me-2"></i> Cierre de Caja
+            </a>
+        </li>
+      <?php endif; ?>
 
       <li class="nav-item">
         <a class="nav-link <?= is_active(['clientes.php', 'editar_clientes.php']) ?>" href="clientes.php">
@@ -205,13 +234,15 @@ $aria_expanded = $is_reporte_active ? 'true' : 'false';
         </a>
       </li>
       
-      <?php if($is_manager): // ACCESO MANAGER ?>
+      <?php if($can_manage_basic_inventory): // Alertas (Vendedor incluido) ?>
       <li class="nav-item">
         <a class="nav-link <?= is_active('alertas.php') ?>" href="alertas.php">
             <i class="bi bi-bell me-2"></i> Alertas
         </a>
       </li>
+      <?php endif; ?>
 
+      <?php if($can_manage_finance_menus): // Reportes (Vendedor EXCLUIDO) ?>
         <li class="nav-item">
           <a class="nav-link <?= $is_reporte_active ? 'active' : '' ?>" data-bs-toggle="collapse" href="#reportesSubmenu" role="button" aria-expanded="<?= $aria_expanded ?>" aria-controls="reportesSubmenu">
             <i class="bi bi-graph-up me-2"></i> Reportes <i class="bi bi-chevron-down ms-auto" style="font-size: 0.8rem;"></i>
@@ -222,7 +253,7 @@ $aria_expanded = $is_reporte_active ? 'true' : 'false';
             <a class="nav-link small <?= is_active('ventas_vendedor.php') ?>" href="ventas_vendedor.php">Ventas por vendedor</a>
           </div>
         </li>
-      <?php endif; // FIN ACCESO MANAGER ?>
+      <?php endif; ?>
 
       <?php if($rol === 'programador'): ?>
         <li class="nav-item"><a class="nav-link text-danger" href="config.php"><i class="bi bi-gear me-2"></i> Configuración avanzada</a></li>
