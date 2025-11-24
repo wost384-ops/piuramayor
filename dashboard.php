@@ -4,28 +4,29 @@ require 'includes/auth_check.php';
 include 'includes/header.php';
 
 $rol = $_SESSION['user']['rol'] ?? 'vendedor';
+$is_manager = ($rol === 'admin' || $rol === 'programador'); // Manager role
 
 // Tarjetas resumen
 $totalProductos = $totalClientes = $ingresos = 0;
+// Consulta TOTAL VENTAS (COUNT)
 $totalVentas = $pdo->query("SELECT COUNT(*) FROM ventas")->fetchColumn();
 
-// Solo admin/programador ven productos, clientes e ingresos
-if($rol === 'admin' || $rol === 'programador'){
+// Métrica de gestión: Solo Manager
+if($is_manager){
     $totalProductos = $pdo->query("SELECT COUNT(*) FROM productos")->fetchColumn();
     $totalClientes = $pdo->query("SELECT COUNT(*) FROM clientes")->fetchColumn();
-    $ingresos = $pdo->query("SELECT IFNULL(SUM(total),0) FROM ventas")->fetchColumn();
+    
+    // Consulta INGRESOS: Suma solo las ventas del día (CURDATE())
+    $ingresos = $pdo->query("SELECT IFNULL(SUM(total),0) FROM ventas WHERE DATE(fecha) = CURDATE()")->fetchColumn();
 }
 
-// Ventas del día
-$ventasDia = $pdo->query("SELECT COUNT(*) FROM ventas WHERE DATE(fecha) = CURDATE()")->fetchColumn();
-
-// Productos con stock bajo (solo admin/programador)
+// Productos con stock bajo (solo gestores)
 $stockBajo = [];
-if($rol === 'admin' || $rol === 'programador'){
+if($is_manager){
     $stockBajo = $pdo->query("SELECT * FROM productos WHERE stock < 10 ORDER BY stock ASC LIMIT 5")->fetchAll(PDO::FETCH_ASSOC);
 }
 
-// Últimas ventas (todos pueden ver) con vendedor
+// Últimas ventas (todos pueden ver) con vendedor - LIMIT 5
 $ultimasVentas = $pdo->query("
   SELECT v.id, v.total, v.fecha, c.nombre AS cliente, u.nombre AS vendedor
   FROM ventas v
@@ -34,9 +35,9 @@ $ultimasVentas = $pdo->query("
   ORDER BY v.id DESC LIMIT 5
 ")->fetchAll(PDO::FETCH_ASSOC);
 
-// Ventas por mes (solo admin/programador)
+// Ventas por mes (solo gestores)
 $ventasMes = [];
-if($rol === 'admin' || $rol === 'programador'){
+if($is_manager){
     $ventasMes = $pdo->query("
         SELECT DATE_FORMAT(fecha, '%M') AS mes, SUM(total) AS total
         FROM ventas
@@ -49,86 +50,92 @@ if($rol === 'admin' || $rol === 'programador'){
 <div class="container mt-4">
   <h2 class="mb-4">📊 Dashboard</h2>
 
-  <div class="row g-3 mb-4">
-    <!-- Ventas del día -->
-    <div class="col-md-3">
-      <div class="card shadow-sm text-center p-3 border-info">
-        <h5>Ventas del día</h5>
-        <h2 class="text-info" id="ventasDia"><?= $ventasDia ?></h2>
+  <div class="row g-3 mb-4 justify-content-start">
+    
+    <?php if($is_manager): ?>
+    
+    <div class="col-md-3"> 
+      <div class="card text-center p-3">
+        <h5>Ingresos (Hoy)</h5>
+        <h2 class="text-danger">S/ <?= number_format($ingresos,2) ?></h2>
       </div>
     </div>
-
-    <?php if($rol === 'admin' || $rol === 'programador'): ?>
+    
     <div class="col-md-3">
-      <div class="card shadow-sm text-center p-3 border-primary">
+      <div class="card text-center p-3">
         <h5>Productos</h5>
         <h2 class="text-primary"><?= $totalProductos ?></h2>
       </div>
     </div>
+    
     <div class="col-md-3">
-      <div class="card shadow-sm text-center p-3 border-success">
+      <div class="card text-center p-3">
         <h5>Clientes</h5>
         <h2 class="text-success"><?= $totalClientes ?></h2>
       </div>
     </div>
+    
     <?php endif; ?>
 
-    <div class="col-md-3">
-      <div class="card shadow-sm text-center p-3 border-warning">
+    <div class="col-md-3"> 
+      <div class="card text-center p-3">
         <h5>Ventas</h5>
         <h2 class="text-warning"><?= $totalVentas ?></h2>
       </div>
     </div>
-
-    <?php if($rol === 'admin' || $rol === 'programador'): ?>
-    <div class="col-md-3">
-      <div class="card shadow-sm text-center p-3 border-danger">
-        <h5>Ingresos</h5>
-        <h2 class="text-danger">S/ <?= number_format($ingresos,2) ?></h2>
-      </div>
+  </div>
+  
+  <?php if($is_manager): ?>
+  <div class="card p-3 mb-4">
+    <h5>🚨 Alerta Predictiva de Stock Bajo <span class="small text-muted float-end" id="ultimaActualizacion"></span></h5>
+    <div id="prediccionStockList">
+        <div class="alert alert-info text-center mb-0">
+            Cargando predicción...
+        </div>
     </div>
-    <?php endif; ?>
+  </div>
+  <?php endif; ?>
+
+  <div class="card p-3 mb-4">
+    <h5>🛒 Últimas ventas (Solo las últimas 5)</h5>
+    <div class="table-responsive">
+        <table class="table table-sm table-striped">
+          <thead>
+            <tr>
+              <th>ID Venta</th>
+              <th>Cliente</th>
+              <th>Vendedor</th>
+              <th>Total</th>
+              <th>Fecha/Hora</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php foreach ($ultimasVentas as $v): ?>
+              <tr>
+                <td><?= $v['id'] ?></td>
+                <td><?= htmlspecialchars($v['cliente'] ?: 'Sin nombre') ?></td>
+                <td><?= htmlspecialchars($v['vendedor'] ?: 'Desconocido') ?></td>
+                <td>S/ <?= number_format($v['total'],2) ?></td>
+                <td><?= date('Y-m-d H:i', strtotime($v['fecha'])) ?></td>
+              </tr>
+            <?php endforeach; ?>
+          </tbody>
+        </table>
+    </div>
   </div>
 
-  <!-- Últimas ventas -->
-  <div class="card shadow-sm p-3 mb-4">
-    <h5>🛒 Últimas ventas</h5>
-    <table class="table table-sm table-striped">
-      <thead>
-        <tr>
-          <th>ID Venta</th>
-          <th>Cliente</th>
-          <th>Vendedor</th>
-          <th>Total</th>
-          <th>Fecha</th>
-        </tr>
-      </thead>
-      <tbody>
-        <?php foreach ($ultimasVentas as $v): ?>
-          <tr>
-            <td><?= $v['id'] ?></td>
-            <td><?= htmlspecialchars($v['cliente'] ?: 'Sin nombre') ?></td>
-            <td><?= htmlspecialchars($v['vendedor'] ?: 'Desconocido') ?></td>
-            <td>S/ <?= number_format($v['total'],2) ?></td>
-            <td><?= $v['fecha'] ?></td>
-          </tr>
-        <?php endforeach; ?>
-      </tbody>
-    </table>
-  </div>
-
-  <?php if($rol === 'admin' || $rol === 'programador'): ?>
-  <!-- Gráfico -->
-  <div class="card shadow-sm p-3 mb-4">
+  <?php if($is_manager): ?>
+  <div class="card p-3 mb-4">
     <h5>📈 Ventas por Mes</h5>
     <canvas id="graficoVentas"></canvas>
   </div>
   <?php endif; ?>
 </div>
 
-<?php if($rol === 'admin' || $rol === 'programador'): ?>
+<?php if($is_manager): ?>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
+// Lógica de Chart.js
 const ctx = document.getElementById('graficoVentas').getContext('2d');
 const data = {
   labels: [<?php foreach ($ventasMes as $v) { echo "'" . $v['mes'] . "',"; } ?>],
@@ -150,20 +157,58 @@ new Chart(ctx, {
   }
 });
 </script>
-<?php endif; ?>
 
 <script>
-function actualizarVentasDia() {
-  fetch('ventas_dia.php')
-    .then(response => response.json())
-    .then(data => {
-      document.getElementById('ventasDia').textContent = data.ventas_dia;
-    })
-    .catch(err => console.error('Error al obtener ventas del día:', err));
+// --- FUNCIÓN DE PREDICCIÓN (Actualiza cada 30 minutos) ---
+function actualizarPrediccionStock() {
+    fetch('stock_prediction.php') 
+        .then(response => response.json())
+        .then(data => {
+            let html = '';
+            const listDiv = document.getElementById('prediccionStockList');
+            const now = new Date();
+            document.getElementById('ultimaActualizacion').textContent = 'Última actualización: ' + now.toLocaleTimeString();
+
+            if (data.error) {
+                 html = `<div class="alert alert-danger mb-0">Error: ${data.error}</div>`;
+            } else if (data.length === 0) {
+                html = `<div class="alert alert-success text-center mb-0">
+                    ✅ No hay productos con riesgo de stock bajo.
+                </div>`;
+            } else {
+                html = `<ul class="list-group list-group-flush">`;
+                data.forEach(item => {
+                    const color = item.riesgo_porcentaje > 80 ? 'danger' : (item.riesgo_porcentaje > 50 ? 'warning' : 'info');
+                    
+                    html += `
+                        <li class="list-group-item list-group-item-${color}" style="border-radius: 0;">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                                    <strong>${item.producto}</strong> (Stock actual: ${item.stock})
+                                </div>
+                                <span class="badge bg-${color} rounded-pill">
+                                    Probabilidad de Venta Hoy: ${item.riesgo_porcentaje}%
+                                </span>
+                            </div>
+                            <small class="text-muted">${item.mensaje_riesgo}</small>
+                        </li>
+                    `;
+                });
+                html += `</ul>`;
+            }
+            listDiv.innerHTML = html;
+        })
+        .catch(err => {
+            console.error('Error en la predicción de stock:', err);
+            document.getElementById('prediccionStockList').innerHTML = '<div class="alert alert-danger mb-0">Error al cargar la predicción.</div>';
+        });
 }
 
-actualizarVentasDia();
-setInterval(actualizarVentasDia, 5000);
-</script>
 
+// --- LÓGICA DE ACTUALIZACIÓN ---
+actualizarPrediccionStock();
+setInterval(actualizarPrediccionStock, 1800000); 
+</script>
+<?php endif; ?>
 <?php include 'includes/footer.php'; ?>

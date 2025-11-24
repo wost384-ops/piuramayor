@@ -8,8 +8,11 @@ if (!isset($_SESSION['user'])) {
 }
 
 $usuario_id = $_SESSION['user']['id'];
+$rol = $_SESSION['user']['rol'] ?? 'vendedor';
+$mensaje = '';
+$can_manage = ($rol === 'admin' || $rol === 'programador'); // Variable para simplificar la verificación de permisos
 
-// --- AGREGAR VENTA ---
+// --- AGREGAR VENTA (Acceso para todos) ---
 if (isset($_POST['agregar'])) {
     $cliente_nombre = trim($_POST['cliente_nombre']);
     $productos = $_POST['productos'] ?? [];
@@ -18,53 +21,101 @@ if (isset($_POST['agregar'])) {
     if (!$cliente_nombre || empty($productos)) {
         $mensaje = "Debes seleccionar un cliente y al menos un producto";
     } else {
-        // Buscar ID del cliente
-        $stmt = $pdo->prepare("SELECT id FROM clientes WHERE nombre = ?");
-        $stmt->execute([$cliente_nombre]);
-        $cliente = $stmt->fetch(PDO::FETCH_ASSOC);
+        $pudo_vender = true;
+        $error_stock = '';
 
-        if (!$cliente) {
-            $stmt = $pdo->prepare("INSERT INTO clientes (nombre) VALUES (?)");
-            $stmt->execute([$cliente_nombre]);
-            $cliente_id = $pdo->lastInsertId();
+        // PRIMERA VERIFICACIÓN: Stock suficiente
+        foreach ($productos as $index => $prod_id) {
+            $cantidad_solicitada = intval($cantidades[$index]);
+            
+            // Obtener stock actual del producto
+            $stmt_stock = $pdo->prepare("SELECT stock, nombre FROM productos WHERE id = ?");
+            $stmt_stock->execute([$prod_id]);
+            $producto_info = $stmt_stock->fetch(PDO::FETCH_ASSOC);
+
+            if ($producto_info) {
+                if ($cantidad_solicitada > $producto_info['stock']) {
+                    $error_stock = "Stock insuficiente para: " . htmlspecialchars($producto_info['nombre']) . ". Solicitado: {$cantidad_solicitada}, Disponible: {$producto_info['stock']}.";
+                    $pudo_vender = false;
+                    break;
+                }
+            }
+        }
+        
+        if (!$pudo_vender) {
+            $mensaje = "❌ Error: " . $error_stock;
         } else {
-            $cliente_id = $cliente['id'];
+            // Lógica para encontrar o crear cliente
+            $stmt = $pdo->prepare("SELECT id FROM clientes WHERE nombre = ?");
+            $stmt->execute([$cliente_nombre]);
+            $cliente = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$cliente) {
+                $stmt = $pdo->prepare("INSERT INTO clientes (nombre) VALUES (?)");
+                $stmt->execute([$cliente_nombre]);
+                $cliente_id = $pdo->lastInsertId();
+            } else {
+                $cliente_id = $cliente['id'];
+            }
+
+            // Calcular total y registrar venta (TRANSACTION recomendado para estos casos)
+            try {
+                $pdo->beginTransaction();
+
+                $total = 0;
+                foreach ($productos as $index => $prod_id) {
+                    $stmt = $pdo->prepare("SELECT precio FROM productos WHERE id = ?");
+                    $stmt->execute([$prod_id]);
+                    $precio = $stmt->fetchColumn();
+                    $total += $precio * $cantidades[$index];
+                }
+
+                // Contar ventas del día
+                $fecha = date('Y-m-d');
+                $stmt = $pdo->prepare("SELECT COUNT(*) AS ventas_hoy FROM ventas WHERE DATE(fecha) = ?");
+                $stmt->execute([$fecha]);
+                $ventasHoy = $stmt->fetch(PDO::FETCH_ASSOC)['ventas_hoy'] ?? 0;
+                $numeroDia = $ventasHoy + 1;
+
+                // Insertar venta
+                $stmt = $pdo->prepare("INSERT INTO ventas (cliente_id, total, fecha, usuario_id, numero_dia) VALUES (?, ?, NOW(), ?, ?)");
+                $stmt->execute([$cliente_id, $total, $usuario_id, $numeroDia]);
+                $venta_id = $pdo->lastInsertId();
+
+                // Insertar detalle venta y ACTUALIZAR STOCK
+                foreach ($productos as $index => $prod_id) {
+                    $cantidad = intval($cantidades[$index]);
+                    
+                    $stmt = $pdo->prepare("SELECT precio FROM productos WHERE id = ?");
+                    $stmt->execute([$prod_id]);
+                    $precio = $stmt->fetchColumn();
+
+                    // Insertar detalle
+                    $stmt = $pdo->prepare("INSERT INTO ventas_detalle (venta_id, producto_id, cantidad, precio_unit) VALUES (?, ?, ?, ?)");
+                    $stmt->execute([$venta_id, $prod_id, $cantidad, $precio]);
+
+                    // ACTUALIZAR STOCK: Restar la cantidad vendida
+                    $stmt_stock_update = $pdo->prepare("UPDATE productos SET stock = stock - ? WHERE id = ?");
+                    $stmt_stock_update->execute([$cantidad, $prod_id]);
+                }
+
+                $pdo->commit();
+                $mensaje = "✅ Venta registrada correctamente.";
+                // Redirigir a la misma página para limpiar el POST y ver el mensaje
+                header("Location: ventas.php?mensaje=" . urlencode($mensaje));
+                exit;
+
+            } catch (\Exception $e) {
+                $pdo->rollBack();
+                $mensaje = "❌ Error al procesar la venta: " . $e->getMessage();
+            }
         }
-
-        // Calcular total
-        $total = 0;
-        foreach ($productos as $index => $prod_id) {
-            $stmt = $pdo->prepare("SELECT precio FROM productos WHERE id = ?");
-            $stmt->execute([$prod_id]);
-            $precio = $stmt->fetchColumn();
-            $total += $precio * $cantidades[$index];
-        }
-
-        // Contar ventas del día
-        $fecha = date('Y-m-d');
-        $stmt = $pdo->prepare("SELECT COUNT(*) AS ventas_hoy FROM ventas WHERE DATE(fecha) = ?");
-        $stmt->execute([$fecha]);
-        $ventasHoy = $stmt->fetch(PDO::FETCH_ASSOC)['ventas_hoy'] ?? 0;
-        $numeroDia = $ventasHoy + 1;
-
-        // Insertar venta
-        $stmt = $pdo->prepare("INSERT INTO ventas (cliente_id, total, fecha, usuario_id, numero_dia) VALUES (?, ?, NOW(), ?, ?)");
-        $stmt->execute([$cliente_id, $total, $usuario_id, $numeroDia]);
-        $venta_id = $pdo->lastInsertId();
-
-        // Insertar detalle venta
-        foreach ($productos as $index => $prod_id) {
-            $stmt = $pdo->prepare("SELECT precio FROM productos WHERE id = ?");
-            $stmt->execute([$prod_id]);
-            $precio = $stmt->fetchColumn();
-
-            $stmt = $pdo->prepare("INSERT INTO ventas_detalle (venta_id, producto_id, cantidad, precio_unit) VALUES (?, ?, ?, ?)");
-            $stmt->execute([$venta_id, $prod_id, $cantidades[$index], $precio]);
-        }
-
-        header("Location: ventas.php");
-        exit;
     }
+}
+
+// Mostrar mensaje si existe en la URL después de la redirección
+if (isset($_GET['mensaje'])) {
+    $mensaje = htmlspecialchars(urldecode($_GET['mensaje']));
 }
 
 // --- OBTENER VENTAS ---
@@ -83,8 +134,11 @@ $ventas = $pdo->query("
 <div class="container mt-4">
     <h3 class="mb-4 text-center">Gestión de Ventas</h3>
 
-    <!-- Agregar venta -->
-    <div class="card mb-4 p-3 shadow-sm">
+    <?php if($mensaje): ?>
+        <div class="alert <?= strpos($mensaje, '✅') !== false ? 'alert-success' : 'alert-danger' ?>"><?= $mensaje ?></div>
+    <?php endif; ?>
+
+    <div class="card mb-4 p-3">
         <h5>➕ Agregar nueva venta</h5>
         <form method="POST" id="ventaForm">
             <div class="row mb-3">
@@ -126,53 +180,65 @@ $ventas = $pdo->query("
         </form>
     </div>
 
-    <!-- Lista de ventas -->
-    <div class="card p-3 shadow-sm">
+    <div class="card p-3">
         <h5>💰 Lista de ventas</h5>
-        <table class="table table-striped mt-3">
-            <thead>
-                <tr>
-                    <th># Día</th>
-                    <th>ID</th>
-                    <th>Cliente</th>
-                    <th>Total</th>
-                    <th>Fecha</th>
-                    <th>Usuario</th>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($ventas as $ven): ?>
-                <tr>
-                    <td><?= $ven['numero_dia'] ?></td>
-                    <td><?= $ven['id'] ?></td>
-                    <td><?= htmlspecialchars($ven['cliente_nombre'] ?: 'Sin nombre') ?></td>
-                    <td><?= number_format($ven['total'], 2) ?></td>
-                    <td><?= htmlspecialchars($ven['fecha']) ?></td>
-                    <td><?= htmlspecialchars($ven['usuario_nombre']) ?></td>
-                </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+        <div class="table-responsive">
+            <table class="table table-striped mt-3">
+                <thead>
+                    <tr>
+                        <th># Día</th>
+                        <th>ID</th>
+                        <th>Cliente</th>
+                        <th>Total</th>
+                        <th>Fecha</th>
+                        <th>Usuario</th>
+                        <?php if ($can_manage): // COLUMNA ACCIONES SOLO PARA ADMIN/PROGRAMADOR ?>
+                        <th>Acciones</th>
+                        <?php endif; ?>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($ventas as $ven): ?>
+                    <tr>
+                        <td><?= $ven['numero_dia'] ?></td>
+                        <td><?= $ven['id'] ?></td>
+                        <td><?= htmlspecialchars($ven['cliente_nombre'] ?: 'Sin nombre') ?></td>
+                        <td>S/ <?= number_format($ven['total'], 2) ?></td>
+                        <td><?= htmlspecialchars(substr($ven['fecha'], 0, 10)) ?></td>
+                        <td><?= htmlspecialchars($ven['usuario_nombre']) ?></td>
+                        <?php if ($can_manage): // BOTÓN EDITAR SOLO PARA ADMIN/PROGRAMADOR ?>
+                        <td>
+                            <a href="editar_venta.php?id=<?= $ven['id'] ?>" class="btn btn-sm btn-warning">Editar</a>
+                        </td>
+                        <?php endif; ?>
+                    </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
 <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
 <script>
-let productosSeleccionados = [];
+let productosSeleccionados = {};
 
 // Buscar productos
 $('#buscar_producto').on('keyup', function() {
     let q = $(this).val();
     if(q.length < 1) { $('#productos_list').html(''); return; }
 
+    // AJAX Call: NOT restricted by role
     $.getJSON('buscar_productos.php', {q: q}, function(data){
         let html = '';
         data.forEach(p => {
-            html += `<a href="#" class="list-group-item list-group-item-action agregarProducto" data-id="${p.id}" data-nombre="${p.nombre}" data-precio="${p.precio}">${p.nombre} - S/ ${p.precio}</a>`;
+            html += `<a href="#" class="list-group-item list-group-item-action agregarProducto" data-id="${p.id}" data-nombre="${p.nombre}" data-precio="${p.precio}">${p.nombre} - S/ ${p.precio} (Stock: ${p.stock})</a>`;
         });
         $('#productos_list').html(html);
     });
 });
+
+// ... (El resto del script JS se mantiene igual)
 
 // Agregar producto a tabla
 $(document).on('click', '.agregarProducto', function(e){
@@ -180,9 +246,12 @@ $(document).on('click', '.agregarProducto', function(e){
     let id = $(this).data('id');
     let nombre = $(this).data('nombre');
     let precio = parseFloat($(this).data('precio'));
+    if(productosSeleccionados[id]) return; 
 
-    if(productosSeleccionados.includes(id)) return;
-    productosSeleccionados.push(id);
+    productosSeleccionados[id] = 1;
+
+    $('#productos_list').html('');
+    $('#buscar_producto').val('');
 
     $('#tablaProductos tbody').append(`
         <tr data-id="${id}">
@@ -190,7 +259,7 @@ $(document).on('click', '.agregarProducto', function(e){
             <td>${precio.toFixed(2)}</td>
             <td><input type="number" name="cantidades[]" value="1" min="1" class="form-control cantidad"></td>
             <td class="subtotal">${precio.toFixed(2)}</td>
-            <td><button class="btn btn-sm btn-danger quitar">X</button></td>
+            <td><button type="button" class="btn btn-sm btn-danger quitar">X</button></td>
         </tr>
     `);
     actualizarTotal();
@@ -200,7 +269,7 @@ $(document).on('click', '.agregarProducto', function(e){
 $(document).on('click', '.quitar', function(){
     let row = $(this).closest('tr');
     let id = row.data('id');
-    productosSeleccionados = productosSeleccionados.filter(p => p != id);
+    delete productosSeleccionados[id];
     row.remove();
     actualizarTotal();
 });
@@ -209,8 +278,14 @@ $(document).on('click', '.quitar', function(){
 $(document).on('input', '.cantidad', function(){
     let row = $(this).closest('tr');
     let precio = parseFloat(row.find('td:eq(1)').text());
-    let cantidad = parseInt($(this).val());
-    row.find('.subtotal').text((precio*cantidad).toFixed(2));
+    let cantidad = parseInt($(this).val()) || 0;
+    
+    if (cantidad < 1) {
+        $(this).val(1);
+        cantidad = 1;
+    }
+    
+    row.find('.subtotal').text((precio * cantidad).toFixed(2));
     actualizarTotal();
 });
 

@@ -4,12 +4,22 @@ require 'includes/db.php';
 include 'includes/header.php';
 
 $rol = $_SESSION['user']['rol'] ?? 'vendedor';
+// Definimos la variable de gestión ampliada
+$can_manage_inventory = ($rol === 'admin' || $rol === 'programador' || $rol === 'vendedor');
+
+// --- RESTRICCIÓN DE ACCESO: SOLO GESTORES PUEDEN ACCEDER A LA GESTIÓN DE PRODUCTOS ---
+// Ya que el Vendedor ahora es un Gestor de Inventario, el acceso es total para él también.
+if(!$can_manage_inventory){
+    echo "<div class='container mt-5'><div class='alert alert-danger text-center'>❌ No tienes permisos para acceder a la Gestión de Productos.</div></div>";
+    include 'includes/footer.php';
+    exit;
+}
+
 $mensaje = '';
 
 // --- Agregar producto ---
 if (isset($_POST['agregar'])) {
     $nombre = trim($_POST['nombre']);
-    $sku = trim($_POST['sku']);
     $precio = floatval($_POST['precio']);
     $stock = intval($_POST['stock']);
     $proveedor_id = intval($_POST['proveedor_id']);
@@ -18,8 +28,8 @@ if (isset($_POST['agregar'])) {
     if ($nombre === '' || $precio <= 0 || $stock < 0) {
         $mensaje = "Completa todos los campos correctamente.";
     } else {
-        $stmt = $pdo->prepare("INSERT INTO productos (nombre, sku, precio, stock, proveedor_id, categoria_id) VALUES (?, ?, ?, ?, ?, ?)");
-        $stmt->execute([$nombre, $sku, $precio, $stock, $proveedor_id, $categoria_id]);
+        $stmt = $pdo->prepare("INSERT INTO productos (nombre, precio, stock, proveedor_id, categoria_id) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute([$nombre, $precio, $stock, $proveedor_id, $categoria_id]); 
         $mensaje = "Producto agregado correctamente.";
     }
 }
@@ -28,7 +38,6 @@ if (isset($_POST['agregar'])) {
 if (isset($_POST['editar'])) {
     $id = intval($_POST['id']);
     $nombre = trim($_POST['nombre']);
-    $sku = trim($_POST['sku']);
     $precio = floatval($_POST['precio']);
     $stock = intval($_POST['stock']);
     $proveedor_id = intval($_POST['proveedor_id']);
@@ -37,14 +46,14 @@ if (isset($_POST['editar'])) {
     if ($nombre === '' || $precio <= 0 || $stock < 0) {
         $mensaje = "Completa todos los campos correctamente.";
     } else {
-        $stmt = $pdo->prepare("UPDATE productos SET nombre=?, sku=?, precio=?, stock=?, proveedor_id=?, categoria_id=? WHERE id=?");
-        $stmt->execute([$nombre, $sku, $precio, $stock, $proveedor_id, $categoria_id, $id]);
+        $stmt = $pdo->prepare("UPDATE productos SET nombre=?, precio=?, stock=?, proveedor_id=?, categoria_id=? WHERE id=?");
+        $stmt->execute([$nombre, $precio, $stock, $proveedor_id, $categoria_id, $id]); 
         $mensaje = "Producto actualizado correctamente.";
     }
 }
 
 // --- Eliminar producto ---
-if (isset($_GET['eliminar']) && ($rol === 'admin' || $rol === 'programador')) {
+if (isset($_GET['eliminar']) && $can_manage_inventory) {
     $id = intval($_GET['eliminar']);
     $pdo->prepare("DELETE FROM productos WHERE id=?")->execute([$id]);
     $mensaje = "Producto eliminado.";
@@ -71,30 +80,24 @@ $categorias = $pdo->query("SELECT id, nombre FROM categorias ORDER BY nombre")->
         <div class="alert alert-info"><?= htmlspecialchars($mensaje) ?></div>
     <?php endif; ?>
 
-    <div class="card p-4 mb-4 shadow-sm">
+    <div class="card p-4 mb-4">
+        <h5 class="mb-3">➕ Agregar Producto</h5>
         <form method="post">
-            <div class="row mb-3">
-                <div class="col">
-                    <label>Nombre</label>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <label class="form-label">Nombre</label>
                     <input type="text" name="nombre" class="form-control" required>
                 </div>
-                <div class="col">
-                    <label>SKU</label>
-                    <input type="text" name="sku" class="form-control">
-                </div>
-                <div class="col">
-                    <label>Precio</label>
+                <div class="col-md-2">
+                    <label class="form-label">Precio</label>
                     <input type="number" step="0.01" name="precio" class="form-control" required>
                 </div>
-                <div class="col">
-                    <label>Stock</label>
+                <div class="col-md-2">
+                    <label class="form-label">Stock</label>
                     <input type="number" name="stock" class="form-control" required>
                 </div>
-            </div>
-
-            <div class="row mb-3">
-                <div class="col">
-                    <label>Proveedor</label>
+                <div class="col-md-3">
+                    <label class="form-label">Proveedor</label>
                     <select name="proveedor_id" class="form-control">
                         <option value="">-- Seleccionar proveedor --</option>
                         <?php foreach($proveedores as $prov): ?>
@@ -102,8 +105,8 @@ $categorias = $pdo->query("SELECT id, nombre FROM categorias ORDER BY nombre")->
                         <?php endforeach; ?>
                     </select>
                 </div>
-                <div class="col">
-                    <label>Categoría</label>
+                <div class="col-md-2">
+                    <label class="form-label">Categoría</label>
                     <select name="categoria_id" class="form-control">
                         <option value="">-- Seleccionar categoría --</option>
                         <?php foreach($categorias as $cat): ?>
@@ -112,57 +115,52 @@ $categorias = $pdo->query("SELECT id, nombre FROM categorias ORDER BY nombre")->
                     </select>
                 </div>
             </div>
-
-            <button type="submit" name="agregar" class="btn btn-primary w-100">Agregar Producto</button>
+            <button type="submit" name="agregar" class="btn btn-primary w-100 mt-3">Agregar Producto</button>
         </form>
     </div>
 
-    <div class="card shadow-sm p-3">
+    <div class="card p-3">
         <h5>Lista de Productos</h5>
-        <table class="table table-striped">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Nombre</th>
-                    <th>SKU</th>
-                    <th>Precio</th>
-                    <th>Stock</th>
-                    <th>Proveedor</th>
-                    <th>Categoría</th>
-                    <?php if($rol === 'admin' || $rol === 'programador'): ?>
+        <div class="table-responsive">
+            <table class="table table-striped mt-3">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Nombre</th>
+                        <th>Precio</th>
+                        <th>Stock</th>
+                        <th>Proveedor</th>
+                        <th>Categoría</th>
                         <th>Acciones</th>
-                    <?php endif; ?>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach($productos as $p): ?>
-                    <?php
-                    // Clase según stock
-                    $claseStock = '';
-                    if ($p['stock'] == 0) {
-                        $claseStock = 'text-danger fw-bold text-decoration-underline';
-                    } elseif ($p['stock'] <= 5) {
-                        $claseStock = 'text-warning fw-bold';
-                    }
-                    ?>
-                    <tr class="<?= $claseStock ?>">
-                        <td><?= $p['id'] ?></td>
-                        <td><?= htmlspecialchars($p['nombre']) ?></td>
-                        <td><?= htmlspecialchars($p['sku']) ?></td>
-                        <td>S/ <?= number_format($p['precio'],2) ?></td>
-                        <td><?= $p['stock'] ?></td>
-                        <td><?= htmlspecialchars($p['proveedor']) ?></td>
-                        <td><?= htmlspecialchars($p['categoria']) ?></td>
-                        <?php if($rol === 'admin' || $rol === 'programador'): ?>
-                        <td>
-                            <a href="productos.php?editar=<?= $p['id'] ?>" class="btn btn-warning btn-sm">Editar</a>
-                            <a href="productos.php?eliminar=<?= $p['id'] ?>" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar este producto?')">Eliminar</a>
-                        </td>
-                        <?php endif; ?>
                     </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    <?php foreach($productos as $p): ?>
+                        <?php
+                        // Clase según stock
+                        $claseStock = '';
+                        if ($p['stock'] == 0) {
+                            $claseStock = 'table-danger fw-bold';
+                        } elseif ($p['stock'] <= 5) {
+                            $claseStock = 'table-warning fw-bold';
+                        }
+                        ?>
+                        <tr class="<?= $claseStock ?>">
+                            <td><?= $p['id'] ?></td>
+                            <td><?= htmlspecialchars($p['nombre']) ?></td>
+                            <td>S/ <?= number_format($p['precio'],2) ?></td>
+                            <td><?= $p['stock'] ?></td>
+                            <td><?= htmlspecialchars($p['proveedor']) ?></td>
+                            <td><?= htmlspecialchars($p['categoria']) ?></td>
+                            <td>
+                                <a href="editar_producto.php?id=<?= $p['id'] ?>" class="btn btn-warning btn-sm">Editar</a>
+                                <a href="productos.php?eliminar=<?= $p['id'] ?>" class="btn btn-danger btn-sm" onclick="return confirm('¿Eliminar este producto?')">Eliminar</a>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 
